@@ -1,0 +1,5 @@
+{
+  "extractor_used": "tavily_extract",
+  "title": "示例头条文章",
+  "content": "这篇文章主要讨论了如何在内容抓取失败时设计稳定的降级链路。作者先说明为什么头条页面存在反爬和推荐流噪音，然后对 Tavily Extract、Jina Reader、LLM-Reader 和原始请求四种方式进行了比较。最后给出一个结论：先做稳定抓取，再做摘要展示，用户确认后再形成正式 Markdown 报告。"
+}

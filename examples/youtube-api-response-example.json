@@ -1,0 +1,14 @@
+{
+  "resultCode": 1,
+  "data": {
+    "taskId": "task-123",
+    "status": "success",
+    "title": "示例 YouTube 视频",
+    "key_points": [
+      "介绍了视频的核心主题和背景",
+      "拆解了三个关键观点和适用场景",
+      "给出了进一步整理与应用的建议"
+    ],
+    "source_text": "第一部分介绍背景。\n\n第二部分展开关键观点。\n\n第三部分给出结论和建议。"
+  }
+}

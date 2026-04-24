@@ -1,0 +1,5 @@
+{
+  "extractor_used": "tavily_extract",
+  "title": "示例网页文章",
+  "content": "这篇网页文章主要介绍了如何为通用 URL 设计稳定的抓取降级链路。内容先比较了 Tavily Extract、Jina Reader、LLM-Reader 和原始请求的适用场景，然后说明为什么要先给用户摘要，再决定是否生成正式报告。最后给出一个实践建议：统一模板和统一交互，可以让不同来源的 Markdown 输出更稳定。"
+}
