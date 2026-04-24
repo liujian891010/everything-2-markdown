@@ -24,7 +24,7 @@ from datetime import date
 from pathlib import Path
 
 from docdb_support import build_document_result
-from document_renderer import render_document
+from document_renderer import polish_key_points, polish_summary, render_document
 
 
 API_URL = "https://hk-al-xg-node.mediportal.com.cn/api/open/audio/export-with-asr"
@@ -236,8 +236,13 @@ def build_output(
 ) -> dict:
     data = extract_result_payload(payload)
     asr_text = extract_asr_text(payload)
-    key_points = build_key_points(asr_text)
-    summary = build_summary(key_points, asr_text)
+    key_points = polish_key_points(build_key_points(asr_text), fallback_text=asr_text)
+    summary = polish_summary(
+        build_summary(key_points, asr_text),
+        key_points,
+        fallback_text=asr_text,
+        prefix="这条抖音内容",
+    )
     title = pick_first(data, "title", "videoTitle", "name") or "抖音内容整理"
 
     result = {
@@ -254,7 +259,10 @@ def build_output(
         result.update(
             {
                 "phase": "await_user_confirmation",
-                "intro_markdown": f"**{title}**\n\n{summary}",
+                "intro_markdown": (
+                    f"**{title}**\n\n{summary}"
+                    + (f"\n\n{bullets_from_key_points(key_points)}" if key_points else "")
+                ),
                 "question": "是否需要我继续按模板整理成正式 Markdown 报告？",
                 "next_action": "rerun with --organize after user confirmation",
             }
@@ -269,6 +277,8 @@ def build_output(
         key_points=key_points,
         source_text=asr_text,
     )
+    result["summary"] = rendered["summary"]
+    result["key_points"] = rendered["key_points"]
     result["document_template"] = rendered["template_name"]
 
     result.update(

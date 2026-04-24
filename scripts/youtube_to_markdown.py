@@ -26,7 +26,7 @@ from datetime import date
 from pathlib import Path
 
 from docdb_support import build_document_result
-from document_renderer import render_document
+from document_renderer import polish_key_points, polish_summary, render_document
 
 
 API_URL = "https://sg-al-cwork-web.mediportal.com.cn/video2markdown/parse"
@@ -426,12 +426,20 @@ def build_output(
     args: argparse.Namespace,
 ) -> dict:
     data = extract_result_payload(payload)
-    key_points = normalize_key_points(data.get("key_points") or data.get("keyPoints"))
+    key_points = polish_key_points(
+        normalize_key_points(data.get("key_points") or data.get("keyPoints")),
+        fallback_text=pick_first(data, "source_text", "sourceText", "content", "transcript") or "",
+    )
     source_text = (
         pick_first(data, "source_text", "sourceText", "content", "transcript") or ""
     )
     title = pick_first(data, "title", "videoTitle", "name") or "YouTube 视频整理"
-    summary = build_summary(key_points)
+    summary = polish_summary(
+        build_summary(key_points),
+        key_points,
+        fallback_text=source_text,
+        prefix="这段视频",
+    )
 
     result = {
         "ok": True,
@@ -447,7 +455,10 @@ def build_output(
         result.update(
             {
                 "phase": "await_user_confirmation",
-                "intro_markdown": f"**{title}**\n\n{summary}",
+                "intro_markdown": (
+                    f"**{title}**\n\n{summary}"
+                    + (f"\n\n{bullets_from_key_points(key_points)}" if key_points else "")
+                ),
                 "question": "是否需要我继续按模板整理成正式 Markdown 文档？",
                 "next_action": "rerun with --organize after user confirmation",
             }
@@ -461,6 +472,8 @@ def build_output(
         key_points=key_points,
         source_text=source_text,
     )
+    result["summary"] = rendered["summary"]
+    result["key_points"] = rendered["key_points"]
     result["document_template"] = rendered["template_name"]
 
     result.update(

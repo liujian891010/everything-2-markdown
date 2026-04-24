@@ -21,7 +21,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from docdb_support import build_document_result
-from document_renderer import render_document
+from document_renderer import polish_key_points, polish_summary, render_document
 
 
 TEXT_EXTENSIONS = {
@@ -599,6 +599,8 @@ def render_markdown_document(
         markdown = f"# {title}\n\n{metadata}\n\n{markdown}\n"
     return {
         "template_name": rendered["template_name"],
+        "summary": rendered["summary"],
+        "key_points": rendered["key_points"],
         "markdown": markdown,
     }
 
@@ -1035,7 +1037,13 @@ def build_output(
     content_for_summary = markdown_content or text_content or ""
     if not key_points:
         key_points = build_key_points(content_for_summary)
-    final_summary = build_summary(summary, key_points, content_for_summary)
+    key_points = polish_key_points(key_points, fallback_text=content_for_summary)
+    final_summary = polish_summary(
+        build_summary(summary, key_points, content_for_summary),
+        key_points,
+        fallback_text=content_for_summary,
+        prefix="本地文件内容",
+    )
     sections_markdown = build_sections_markdown(sections)
     organized_body = organize_body(markdown_content or text_content or "", sections_markdown)
     rendered = render_markdown_document(
@@ -1067,6 +1075,9 @@ def build_output(
     }
     if fallback_reason:
         result["fallback_reason"] = fallback_reason
+
+    result["summary"] = rendered["summary"]
+    result["key_points"] = rendered["key_points"]
 
     result.update(
         build_document_result(

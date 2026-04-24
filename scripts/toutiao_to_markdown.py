@@ -29,7 +29,7 @@ from datetime import date
 from pathlib import Path
 
 from docdb_support import build_document_result
-from document_renderer import render_document
+from document_renderer import polish_key_points, polish_summary, render_document
 
 
 TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
@@ -461,8 +461,13 @@ def build_output(
 ) -> dict:
     content = extracted.get("content", "")
     title = extracted.get("title") or "头条内容整理"
-    key_points = build_key_points(content)
-    summary = build_summary(key_points, content)
+    key_points = polish_key_points(build_key_points(content), fallback_text=content)
+    summary = polish_summary(
+        build_summary(key_points, content),
+        key_points,
+        fallback_text=content,
+        prefix="这篇头条内容",
+    )
 
     result = {
         "ok": True,
@@ -479,7 +484,10 @@ def build_output(
         result.update(
             {
                 "phase": "await_user_confirmation",
-                "intro_markdown": f"**{title}**\n\n{summary}",
+                "intro_markdown": (
+                    f"**{title}**\n\n{summary}"
+                    + (f"\n\n{bullets_from_key_points(key_points)}" if key_points else "")
+                ),
                 "question": "是否需要我继续按模板整理成正式 Markdown 报告？",
                 "next_action": "rerun with --organize after user confirmation",
             }
@@ -494,6 +502,8 @@ def build_output(
         key_points=key_points,
         source_text=content,
     )
+    result["summary"] = rendered["summary"]
+    result["key_points"] = rendered["key_points"]
     result["document_template"] = rendered["template_name"]
 
     result.update(
