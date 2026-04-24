@@ -21,7 +21,13 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from docdb_support import build_document_result
-from document_renderer import polish_key_points, polish_summary, render_document
+from document_renderer import (
+    build_content_blocks_from_sections,
+    build_content_blocks_from_text,
+    polish_key_points,
+    polish_summary,
+    render_document,
+)
 
 
 TEXT_EXTENSIONS = {
@@ -573,6 +579,8 @@ def render_markdown_document(
     summary: str,
     key_points: list[str],
     body: str,
+    content_blocks,
+    raw_source_text: str,
     payload,
 ) -> dict:
     metadata = build_metadata_lines(file_path, file_kind, mime, payload)
@@ -583,6 +591,8 @@ def render_markdown_document(
         summary=summary,
         key_points=key_points,
         source_text=body.strip(),
+        content_blocks=content_blocks,
+        raw_source_text=raw_source_text,
     )
     markdown = rendered["markdown"].strip()
     lines = markdown.splitlines()
@@ -601,6 +611,7 @@ def render_markdown_document(
         "template_name": rendered["template_name"],
         "summary": rendered["summary"],
         "key_points": rendered["key_points"],
+        "content_blocks": rendered["content_blocks"],
         "markdown": markdown,
     }
 
@@ -1046,6 +1057,9 @@ def build_output(
     )
     sections_markdown = build_sections_markdown(sections)
     organized_body = organize_body(markdown_content or text_content or "", sections_markdown)
+    content_blocks = build_content_blocks_from_sections(sections)
+    if not content_blocks:
+        content_blocks = build_content_blocks_from_text(markdown_content or text_content or "")
     rendered = render_markdown_document(
         title=title,
         file_path=file_path,
@@ -1054,6 +1068,8 @@ def build_output(
         summary=final_summary,
         key_points=key_points,
         body=organized_body,
+        content_blocks=content_blocks,
+        raw_source_text=text_content or "",
         payload=data,
     )
 
@@ -1064,6 +1080,7 @@ def build_output(
         "title": title,
         "summary": final_summary,
         "key_points": key_points,
+        "content_blocks": content_blocks,
         "file_kind": file_kind,
         "extension": file_path.suffix.lower(),
         "mime": mime,
@@ -1078,6 +1095,7 @@ def build_output(
 
     result["summary"] = rendered["summary"]
     result["key_points"] = rendered["key_points"]
+    result["content_blocks"] = rendered["content_blocks"]
 
     result.update(
         build_document_result(

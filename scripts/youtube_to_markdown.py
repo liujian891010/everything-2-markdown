@@ -26,7 +26,12 @@ from datetime import date
 from pathlib import Path
 
 from docdb_support import build_document_result
-from document_renderer import polish_key_points, polish_summary, render_document
+from document_renderer import (
+    build_content_blocks_from_text,
+    polish_key_points,
+    polish_summary,
+    render_document,
+)
 
 
 API_URL = "https://sg-al-cwork-web.mediportal.com.cn/video2markdown/parse"
@@ -408,6 +413,7 @@ def render_markdown_document(
     summary: str,
     key_points: list[str],
     source_text: str,
+    content_blocks,
 ) -> dict:
     return render_document(
         title=title,
@@ -416,6 +422,8 @@ def render_markdown_document(
         summary=summary,
         key_points=key_points,
         source_text=source_text,
+        content_blocks=content_blocks,
+        raw_source_text=source_text,
     )
 
 
@@ -441,6 +449,8 @@ def build_output(
         prefix="这段视频",
     )
 
+    content_blocks = build_content_blocks_from_text(source_text)
+
     result = {
         "ok": True,
         "source_type": "youtube_url",
@@ -448,6 +458,7 @@ def build_output(
         "title": title,
         "summary": summary,
         "key_points": key_points,
+        "content_blocks": content_blocks,
         "source_text_length": len(source_text),
     }
 
@@ -471,9 +482,11 @@ def build_output(
         summary=summary,
         key_points=key_points,
         source_text=source_text,
+        content_blocks=content_blocks,
     )
     result["summary"] = rendered["summary"]
     result["key_points"] = rendered["key_points"]
+    result["content_blocks"] = rendered["content_blocks"]
     result["document_template"] = rendered["template_name"]
 
     result.update(

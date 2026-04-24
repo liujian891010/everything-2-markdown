@@ -29,7 +29,12 @@ from datetime import date
 from pathlib import Path
 
 from docdb_support import build_document_result
-from document_renderer import polish_key_points, polish_summary, render_document
+from document_renderer import (
+    build_content_blocks_from_text,
+    polish_key_points,
+    polish_summary,
+    render_document,
+)
 
 
 TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
@@ -469,6 +474,8 @@ def build_output(
         prefix="这篇头条内容",
     )
 
+    content_blocks = build_content_blocks_from_text(content)
+
     result = {
         "ok": True,
         "source_type": "toutiao_url",
@@ -476,6 +483,7 @@ def build_output(
         "title": title,
         "summary": summary,
         "key_points": key_points,
+        "content_blocks": content_blocks,
         "source_text_length": len(content),
         "extractor_used": extracted.get("extractor_used"),
     }
@@ -501,9 +509,12 @@ def build_output(
         summary=summary,
         key_points=key_points,
         source_text=content,
+        content_blocks=content_blocks,
+        raw_source_text=content,
     )
     result["summary"] = rendered["summary"]
     result["key_points"] = rendered["key_points"]
+    result["content_blocks"] = rendered["content_blocks"]
     result["document_template"] = rendered["template_name"]
 
     result.update(

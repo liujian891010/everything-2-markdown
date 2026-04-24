@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Shared markdown rendering with lightweight template selection."""
+"""Shared markdown rendering with block-based normalization."""
 from __future__ import annotations
 
+import json
 import math
 import re
 from datetime import date
@@ -44,6 +45,7 @@ INLINE_ENUMERATION_SPLIT_RE = re.compile(
     r"(?=(?:\d{1,2}[.)、]|[一二三四五六七八九十]+[、.]|第(?:\d{1,2}|[一二三四五六七八九十]+)(?:点|步|部分|阶段|条|项))\s*)"
 )
 LEADING_LIST_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)")
+HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
 
 
 def normalize_newlines(text: str | None) -> str:
@@ -64,8 +66,7 @@ def strip_markdown(text: str) -> str:
     cleaned = re.sub(r"^\s{0,3}#+\s*", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"^\s*>+\s*", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"^\s*[-*+]\s+", "", cleaned, flags=re.MULTILINE)
-    cleaned = re.sub(r"^\s*\d+\.\s+", "", cleaned, flags=re.MULTILINE)
-    cleaned = re.sub(r"^\s*\d+\)\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*\d+[.)]\s+", "", cleaned, flags=re.MULTILINE)
     return normalize_space(cleaned)
 
 
@@ -122,8 +123,6 @@ def bullets_from_key_points(key_points: list[str]) -> str:
 
 
 def fenced_source_text(source_text: str) -> str:
-    if not (source_text or "").strip():
-        return "```text\n暂无原始文本\n```"
     return f"```text\n{source_text.strip()}\n```"
 
 
@@ -139,6 +138,16 @@ def render_source_text_section(source_text: str) -> str:
 
 def _trim_trailing_punctuation(text: str) -> str:
     return text.rstrip("。；;，,、!！?？:： ")
+
+
+def split_sentences(text: str) -> list[str]:
+    normalized = normalize_space(text)
+    if not normalized:
+        return []
+    prepared = re.sub(r"([。！？!?；;]+)", r"\1\n", normalized)
+    prepared = re.sub(r"\.(\s+)(?=[A-Z0-9\u4e00-\u9fff])", ".\n", prepared)
+    sentences = [part.strip() for part in prepared.splitlines() if part.strip()]
+    return sentences or [normalized]
 
 
 def compress_key_point(text: str, *, max_chars: int = 72) -> str:
@@ -165,8 +174,6 @@ def compress_key_point(text: str, *, max_chars: int = 72) -> str:
             return candidate
         normalized = candidate
 
-    if len(normalized) <= max_chars:
-        return normalized
     return normalized[: max_chars - 3].rstrip() + "..."
 
 
@@ -244,7 +251,6 @@ def has_markdown_structure(text: str) -> bool:
     stripped = normalize_newlines(text).strip()
     if not stripped:
         return False
-
     checks = (
         re.search(r"^\s{0,3}#{1,6}\s+", stripped, flags=re.MULTILINE),
         re.search(r"^\s*[-*+]\s+", stripped, flags=re.MULTILINE),
@@ -270,10 +276,7 @@ def block_is_list(block: str) -> bool:
     lines = [line.strip() for line in block.splitlines() if line.strip()]
     if not lines:
         return False
-    return all(
-        re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)", line)
-        for line in lines
-    )
+    return all(re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)", line) for line in lines)
 
 
 def block_is_quote(block: str) -> bool:
@@ -281,25 +284,29 @@ def block_is_quote(block: str) -> bool:
     return bool(lines) and all(line.startswith(">") for line in lines)
 
 
-def normalize_structured_block(block: str) -> str:
-    return "\n".join(line.rstrip() for line in normalize_newlines(block).splitlines()).strip()
-
-
-def split_sentences(text: str) -> list[str]:
+def extract_inline_list_items(text: str) -> list[str]:
     normalized = normalize_space(text)
     if not normalized:
         return []
-    prepared = re.sub(r"([。！？!?；;]+)", r"\1\n", normalized)
-    prepared = re.sub(r"\.(\s+)(?=[A-Z0-9\u4e00-\u9fff])", ".\n", prepared)
-    sentences = [part.strip() for part in prepared.splitlines() if part.strip()]
-    return sentences or [normalized]
+    if len(INLINE_ENUMERATION_SPLIT_RE.findall(normalized)) < 3:
+        return []
+
+    parts = [part.strip() for part in INLINE_ENUMERATION_SPLIT_RE.split(normalized) if part.strip()]
+    items: list[str] = []
+    for part in parts:
+        if not ORDERED_PREFIX_RE.match(part):
+            continue
+        cleaned = ORDERED_PREFIX_RE.sub("", part).strip(" ：:;；，,。")
+        if cleaned:
+            items.append(cleaned)
+    return items if len(items) >= 3 else []
 
 
 def group_sentences(
     sentences: list[str],
     *,
-    max_chars: int = 180,
-    max_sentences: int = 3,
+    max_chars: int = 120,
+    max_sentences: int = 2,
 ) -> list[str]:
     paragraphs: list[str] = []
     bucket: list[str] = []
@@ -321,24 +328,6 @@ def group_sentences(
     return paragraphs
 
 
-def extract_inline_list_items(text: str) -> list[str]:
-    normalized = normalize_space(text)
-    if not normalized:
-        return []
-    if len(INLINE_ENUMERATION_SPLIT_RE.findall(normalized)) < 3:
-        return []
-
-    parts = [part.strip() for part in INLINE_ENUMERATION_SPLIT_RE.split(normalized) if part.strip()]
-    items: list[str] = []
-    for part in parts:
-        if not ORDERED_PREFIX_RE.match(part):
-            continue
-        cleaned = ORDERED_PREFIX_RE.sub("", part).strip(" ：:;；，,。")
-        if cleaned:
-            items.append(cleaned)
-    return items if len(items) >= 3 else []
-
-
 def format_plain_block(block: str) -> str:
     normalized = normalize_space(block)
     if not normalized:
@@ -349,11 +338,189 @@ def format_plain_block(block: str) -> str:
         return "\n".join(f"- {item}" for item in inline_items)
 
     sentences = split_sentences(normalized)
-    if len(sentences) <= 2 and len(normalized) <= 180:
+    if len(sentences) <= 1 and len(normalized) <= 120:
         return normalized
 
     paragraphs = group_sentences(sentences)
     return "\n\n".join(paragraphs) if paragraphs else normalized
+
+
+def _pick_first_mapping_value(item: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _make_heading_block(text: str, *, level: int = 3) -> dict:
+    return {"type": "heading", "level": max(1, min(level, 6)), "text": normalize_space(text)}
+
+
+def _make_paragraph_block(text: str) -> dict:
+    return {"type": "paragraph", "text": normalize_space(text)}
+
+
+def _make_list_block(items: list[str], *, ordered: bool = False) -> dict:
+    return {"type": "list", "items": [normalize_space(item) for item in items if normalize_space(item)], "ordered": ordered}
+
+
+def _parse_list_block(block: str) -> dict | None:
+    lines = [line.strip() for line in normalize_newlines(block).splitlines() if line.strip()]
+    if not lines:
+        return None
+    ordered = bool(re.match(r"^\d+[.)]\s+", lines[0]))
+    items = [re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+)", "", line).strip() for line in lines]
+    items = [item for item in items if item]
+    return _make_list_block(items, ordered=ordered) if items else None
+
+
+def _blocks_from_formatted_text(text: str) -> list[dict]:
+    rendered = format_plain_block(text)
+    if not rendered:
+        return []
+    if block_is_list(rendered):
+        parsed = _parse_list_block(rendered)
+        return [parsed] if parsed else []
+    return [_make_paragraph_block(paragraph) for paragraph in split_paragraphs(rendered)]
+
+
+def _build_content_blocks_from_plain_text(text: str) -> list[dict]:
+    blocks: list[dict] = []
+    for paragraph in split_paragraphs(text):
+        blocks.extend(_blocks_from_formatted_text(paragraph))
+    return [block for block in blocks if block]
+
+
+def _build_content_blocks_from_markdown(text: str) -> list[dict]:
+    content_blocks: list[dict] = []
+    for block in split_blocks_preserving_fences(text):
+        stripped = block.strip()
+        if not stripped:
+            continue
+        if block_is_code(stripped):
+            lines = stripped.splitlines()
+            first_line = lines[0].strip()
+            language = first_line[3:].strip()
+            code = "\n".join(lines[1:-1]).rstrip()
+            content_blocks.append({"type": "code", "language": language, "text": code})
+            continue
+        if block_is_table(stripped):
+            content_blocks.append({"type": "table", "markdown": stripped})
+            continue
+        if block_is_quote(stripped):
+            quote_text = "\n".join(line.lstrip("> ").rstrip() for line in stripped.splitlines())
+            content_blocks.append({"type": "quote", "text": quote_text.strip()})
+            continue
+        if block_is_list(stripped):
+            parsed = _parse_list_block(stripped)
+            if parsed:
+                content_blocks.append(parsed)
+            continue
+
+        heading_match = HEADING_RE.match(stripped.splitlines()[0])
+        if heading_match:
+            level = len(heading_match.group(1))
+            title = heading_match.group(2).strip()
+            content_blocks.append(_make_heading_block(title, level=level))
+            rest_lines = stripped.splitlines()[1:]
+            rest = "\n".join(rest_lines).strip()
+            if rest:
+                content_blocks.extend(build_content_blocks_from_text(rest))
+            continue
+
+        content_blocks.extend(_blocks_from_formatted_text(stripped))
+    return content_blocks
+
+
+def build_content_blocks_from_text(text: str) -> list[dict]:
+    source = normalize_newlines(text).strip()
+    if not source:
+        return []
+    if has_markdown_structure(source):
+        return _build_content_blocks_from_markdown(source)
+    return _build_content_blocks_from_plain_text(source)
+
+
+def build_content_blocks_from_sections(sections) -> list[dict]:
+    if not isinstance(sections, list) or not sections:
+        return []
+
+    blocks: list[dict] = []
+    for index, item in enumerate(sections, start=1):
+        if isinstance(item, str):
+            title = f"第 {index} 部分"
+            body = item
+        elif isinstance(item, dict):
+            title = _pick_first_mapping_value(item, ("title", "name", "heading", "header", "sectionTitle")) or f"第 {index} 部分"
+            body = _pick_first_mapping_value(item, ("markdown", "content", "text", "body", "pageText", "pageContent"))
+            if not body:
+                body = json.dumps(item, ensure_ascii=False, indent=2)
+                body = f"```json\n{body}\n```"
+        else:
+            title = f"第 {index} 部分"
+            body = str(item)
+
+        blocks.append(_make_heading_block(title, level=3))
+        blocks.extend(build_content_blocks_from_text(body))
+    return blocks
+
+
+def normalize_content_blocks(content_blocks, *, fallback_text: str = "") -> list[dict]:
+    if not content_blocks:
+        return build_content_blocks_from_text(fallback_text)
+
+    normalized: list[dict] = []
+    for item in content_blocks:
+        if isinstance(item, str):
+            normalized.extend(build_content_blocks_from_text(item))
+            continue
+        if not isinstance(item, dict):
+            normalized.extend(build_content_blocks_from_text(str(item)))
+            continue
+
+        block_type = normalize_space(item.get("type")).lower()
+        if block_type == "heading":
+            text = normalize_space(item.get("text") or item.get("title"))
+            if text:
+                normalized.append(_make_heading_block(text, level=int(item.get("level") or 3)))
+            continue
+        if block_type == "paragraph":
+            text = normalize_space(item.get("text") or item.get("content") or item.get("body"))
+            if text:
+                normalized.append(_make_paragraph_block(text))
+            continue
+        if block_type == "quote":
+            text = normalize_newlines(item.get("text") or item.get("content") or item.get("body")).strip()
+            if text:
+                normalized.append({"type": "quote", "text": text})
+            continue
+        if block_type == "code":
+            text = normalize_newlines(item.get("text") or item.get("content") or item.get("body")).rstrip()
+            if text:
+                normalized.append({"type": "code", "language": normalize_space(item.get("language")), "text": text})
+            continue
+        if block_type == "table":
+            markdown = normalize_newlines(item.get("markdown") or item.get("text") or item.get("content")).strip()
+            if markdown:
+                normalized.append({"type": "table", "markdown": markdown})
+            continue
+        if block_type == "list":
+            items = item.get("items")
+            if isinstance(items, list):
+                parsed = _make_list_block([str(entry) for entry in items], ordered=bool(item.get("ordered")))
+                if parsed["items"]:
+                    normalized.append(parsed)
+            continue
+
+        title = _pick_first_mapping_value(item, ("title", "name", "heading", "header", "sectionTitle"))
+        body = _pick_first_mapping_value(item, ("markdown", "content", "text", "body", "pageText", "pageContent"))
+        if title:
+            normalized.append(_make_heading_block(title, level=3))
+        if body:
+            normalized.extend(build_content_blocks_from_text(body))
+
+    return normalized if normalized else build_content_blocks_from_text(fallback_text)
 
 
 def sectionize_paragraphs(paragraphs: list[str]) -> str:
@@ -361,85 +528,104 @@ def sectionize_paragraphs(paragraphs: list[str]) -> str:
     if len(cleaned) < 4:
         return "\n\n".join(cleaned) if cleaned else PLACEHOLDER_BODY
 
-    if len(cleaned) >= 7:
-        titles = ["### 核心内容", "### 关键细节", "### 补充说明"]
-    else:
-        titles = ["### 核心内容", "### 关键细节"]
-
+    titles = ["### 核心内容", "### 关键细节", "### 补充说明"] if len(cleaned) >= 7 else ["### 核心内容", "### 关键细节"]
     chunk_size = max(1, math.ceil(len(cleaned) / len(titles)))
     sections: list[str] = []
     start = 0
     for title in titles:
         chunk = cleaned[start:start + chunk_size]
-        if not chunk:
-            continue
-        sections.append(f"{title}\n\n" + "\n\n".join(chunk))
+        if chunk:
+            sections.append(f"{title}\n\n" + "\n\n".join(chunk))
         start += chunk_size
     return "\n\n".join(sections)
 
 
-def beautify_plain_text(text: str) -> str:
-    paragraphs = split_paragraphs(text)
-    if not paragraphs:
-        normalized = normalize_space(text)
-        return normalized or PLACEHOLDER_BODY
-
-    rendered_blocks = [format_plain_block(paragraph) for paragraph in paragraphs if paragraph.strip()]
-    joined = "\n\n".join(block for block in rendered_blocks if block.strip()).strip()
-    if not joined:
+def render_content_blocks(content_blocks: list[dict]) -> str:
+    if not content_blocks:
         return PLACEHOLDER_BODY
 
-    flattened = split_paragraphs(joined)
-    if len(paragraphs) == 1 and len(flattened) >= 4:
-        return sectionize_paragraphs(flattened)
-    return joined
-
-
-def beautify_markdown_text(text: str) -> str:
-    blocks = split_blocks_preserving_fences(text)
-    if not blocks:
-        return PLACEHOLDER_BODY
+    paragraphs_only = all(block.get("type") == "paragraph" for block in content_blocks)
+    if paragraphs_only:
+        paragraphs = [block["text"] for block in content_blocks]
+        if len(paragraphs) == 1 and len(paragraphs[0]) > 160:
+            paragraphs = group_sentences(split_sentences(paragraphs[0]), max_chars=110, max_sentences=2)
+        return sectionize_paragraphs(paragraphs)
 
     rendered: list[str] = []
-    plain_blocks = 0
-    for block in blocks:
-        if block_is_code(block) or block_is_table(block) or block_is_list(block) or block_is_quote(block):
-            rendered.append(normalize_structured_block(block))
-            continue
-        if re.match(r"^\s{0,3}#{1,6}\s+", block.strip()):
-            rendered.append(normalize_structured_block(block))
-            continue
-        plain_blocks += 1
-        rendered.append(format_plain_block(block))
+    for block in content_blocks:
+        block_type = block.get("type")
+        if block_type == "heading":
+            level = max(2, min(int(block.get("level") or 3), 4))
+            rendered.append(f"{'#' * level} {block['text']}")
+        elif block_type == "paragraph":
+            rendered.append(block["text"])
+        elif block_type == "list":
+            marker = "{index}. " if block.get("ordered") else "- "
+            items = block.get("items") or []
+            if block.get("ordered"):
+                rendered.append("\n".join(f"{index}. {item}" for index, item in enumerate(items, start=1)))
+            else:
+                rendered.append("\n".join(f"- {item}" for item in items))
+        elif block_type == "quote":
+            rendered.append("\n".join(f"> {line}" for line in normalize_newlines(block["text"]).splitlines()))
+        elif block_type == "code":
+            language = block.get("language") or ""
+            rendered.append(f"```{language}\n{block['text']}\n```")
+        elif block_type == "table":
+            rendered.append(block["markdown"].strip())
 
     compact = [item.strip() for item in rendered if item.strip()]
-    if len(compact) == 1 and plain_blocks == 1:
-        flattened = split_paragraphs(compact[0])
-        if len(flattened) >= 4:
-            return sectionize_paragraphs(flattened)
     return "\n\n".join(compact) if compact else PLACEHOLDER_BODY
 
 
 def organize_source_text(source_text: str) -> str:
-    source = normalize_newlines(source_text).strip()
-    if not source:
-        return PLACEHOLDER_BODY
-    if has_markdown_structure(source):
-        return beautify_markdown_text(source)
-    return beautify_plain_text(source)
+    return render_content_blocks(build_content_blocks_from_text(source_text))
 
 
-def extract_content_units(source_text: str, *, max_units: int) -> list[str]:
-    plain_text = strip_markdown(source_text)
-    if not plain_text:
+def content_blocks_to_plain_text(content_blocks: list[dict]) -> str:
+    segments: list[str] = []
+    for block in content_blocks:
+        block_type = block.get("type")
+        if block_type == "heading":
+            segments.append(block["text"])
+        elif block_type == "paragraph":
+            segments.append(block["text"])
+        elif block_type == "list":
+            segments.extend(block.get("items") or [])
+        elif block_type == "quote":
+            segments.append(block["text"])
+        elif block_type == "table":
+            segments.append(strip_markdown(block["markdown"]))
+    return normalize_space(" ".join(segment for segment in segments if normalize_space(segment)))
+
+
+def extract_content_units_from_blocks(
+    content_blocks: list[dict],
+    *,
+    max_units: int,
+    fallback_text: str = "",
+) -> list[str]:
+    units: list[str] = []
+    for block in content_blocks:
+        block_type = block.get("type")
+        if block_type == "paragraph":
+            units.append(block["text"])
+        elif block_type == "list":
+            units.extend(item for item in block.get("items") or [] if normalize_space(item))
+        elif block_type == "quote":
+            units.append(normalize_space(block["text"]))
+        elif block_type == "heading" and not units:
+            units.append(block["text"])
+        if len(units) >= max_units:
+            break
+    if units:
+        return units[:max_units]
+
+    fallback_plain = strip_markdown(fallback_text)
+    if not fallback_plain:
         return []
-
-    paragraphs = split_paragraphs(organize_source_text(plain_text))
-    if paragraphs:
-        return paragraphs[:max_units]
-
-    sentences = split_sentences(plain_text)
-    return group_sentences(sentences, max_chars=140, max_sentences=2)[:max_units]
+    paragraphs = split_paragraphs(render_content_blocks(build_content_blocks_from_text(fallback_plain)))
+    return paragraphs[:max_units]
 
 
 def _keyword_score(text: str, keywords: tuple[str, ...], *, title_text: str) -> int:
@@ -461,23 +647,17 @@ def choose_template_kind(
     source_platform: str,
 ) -> str:
     title_text = normalize_space(title).lower()
-    full_text = " ".join(
-        normalize_space(item) for item in [title, summary, *key_points, source_text[:2000]]
-    ).lower()
-
+    full_text = " ".join(normalize_space(item) for item in [title, summary, *key_points, source_text[:2000]]).lower()
     scores = {
         "practical_record": _keyword_score(full_text, PRACTICAL_KEYWORDS, title_text=title_text),
         "research_survey": _keyword_score(full_text, RESEARCH_KEYWORDS, title_text=title_text),
         "tech_analysis": _keyword_score(full_text, TECH_KEYWORDS, title_text=title_text),
     }
-
     if source_platform in {"YouTube", "抖音"} and scores["practical_record"] > 0:
         scores["practical_record"] += 1
 
     best_kind = max(scores, key=scores.get)
-    if scores[best_kind] <= 0:
-        return "report"
-    if not TEMPLATE_FILES.get(best_kind, Path()).exists():
+    if scores[best_kind] <= 0 or not TEMPLATE_FILES.get(best_kind, Path()).exists():
         return "report"
     return best_kind
 
@@ -487,7 +667,7 @@ def _component_table(key_points: list[str]) -> str:
     for index, point in enumerate(key_points[:4], start=1):
         rows.append(f"| 要点 {index} | {point} |")
     if len(rows) == 2:
-        rows.append("| 核心内容 | 暂无明确关键点 |")
+        rows.append(f"| 核心内容 | {PLACEHOLDER_KEY_POINT} |")
     return "\n".join(rows)
 
 
@@ -496,7 +676,7 @@ def _feature_table(key_points: list[str]) -> str:
     for index, point in enumerate(key_points[:4], start=1):
         rows.append(f"| 特性 {index} | {point} | 来源整理 |")
     if len(rows) == 2:
-        rows.append("| 暂无明确特性 | 暂无明确关键点 | - |")
+        rows.append(f"| 暂无明确特性 | {PLACEHOLDER_KEY_POINT} | - |")
     return "\n".join(rows)
 
 
@@ -519,22 +699,17 @@ def _observation_table(key_points: list[str]) -> str:
     return "\n".join(rows)
 
 
-def _steps_section(source_text: str) -> str:
-    units = extract_content_units(source_text, max_units=6)
+def _steps_section(content_blocks: list[dict], *, fallback_text: str) -> str:
+    units = extract_content_units_from_blocks(content_blocks, max_units=6, fallback_text=fallback_text)
     if not units:
         return "### 2.1 过程整理\n\n暂无可用步骤。"
-
-    rendered = []
-    for index, unit in enumerate(units, start=1):
-        rendered.append(f"### 2.{index} 步骤 {index}\n\n{unit}")
-    return "\n\n".join(rendered)
+    return "\n\n".join(f"### 2.{index} 步骤 {index}\n\n{unit}" for index, unit in enumerate(units, start=1))
 
 
-def _logic_section(source_text: str) -> str:
-    units = extract_content_units(source_text, max_units=4)
+def _logic_section(content_blocks: list[dict], *, fallback_text: str) -> str:
+    units = extract_content_units_from_blocks(content_blocks, max_units=4, fallback_text=fallback_text)
     if not units:
         return "### 2.1 逻辑分析\n- **位置**: 整体内容\n- **逻辑**: 暂无可用正文\n- **效果**: 待补充"
-
     rendered = []
     for index, unit in enumerate(units, start=1):
         rendered.append(
@@ -554,70 +729,6 @@ def _research_relation_table(source_platform: str) -> str:
     )
 
 
-def render_document(
-    *,
-    title: str,
-    source_platform: str,
-    source_url: str,
-    summary: str,
-    key_points: list[str],
-    source_text: str,
-) -> dict:
-    display_key_points = polish_key_points(key_points, fallback_text=source_text)
-    display_summary = polish_summary(summary, display_key_points, fallback_text=source_text)
-    template_kind = choose_template_kind(
-        title=title,
-        summary=display_summary,
-        key_points=display_key_points,
-        source_text=source_text,
-        source_platform=source_platform,
-    )
-    if template_kind == "practical_record":
-        markdown = render_practical_record(
-            title=title,
-            source_platform=source_platform,
-            source_url=source_url,
-            summary=display_summary,
-            key_points=display_key_points,
-            source_text=source_text,
-        )
-    elif template_kind == "research_survey":
-        markdown = render_research_survey(
-            title=title,
-            source_platform=source_platform,
-            source_url=source_url,
-            summary=display_summary,
-            key_points=display_key_points,
-            source_text=source_text,
-        )
-    elif template_kind == "tech_analysis":
-        markdown = render_tech_analysis(
-            title=title,
-            source_platform=source_platform,
-            source_url=source_url,
-            summary=display_summary,
-            key_points=display_key_points,
-            source_text=source_text,
-        )
-    else:
-        template_kind = "report"
-        markdown = render_report(
-            title=title,
-            source_platform=source_platform,
-            source_url=source_url,
-            summary=display_summary,
-            key_points=display_key_points,
-            source_text=source_text,
-        )
-
-    return {
-        "template_name": template_kind,
-        "summary": display_summary,
-        "key_points": display_key_points,
-        "markdown": markdown,
-    }
-
-
 def render_report(
     *,
     title: str,
@@ -625,10 +736,10 @@ def render_report(
     source_url: str,
     summary: str,
     key_points: list[str],
-    source_text: str,
+    organized_body: str,
+    raw_source_text: str,
 ) -> str:
-    organized_body = organize_source_text(source_text)
-    raw_section = render_source_text_section(source_text)
+    raw_section = render_source_text_section(raw_source_text)
     return (
         f"# {title}\n\n"
         f"> 来源：{source_platform}\n"
@@ -649,7 +760,8 @@ def render_practical_record(
     source_url: str,
     summary: str,
     key_points: list[str],
-    source_text: str,
+    organized_body: str,
+    content_blocks: list[dict],
 ) -> str:
     return (
         f"# {title}\n\n"
@@ -665,7 +777,7 @@ def render_practical_record(
         f"{_component_table(key_points)}\n\n"
         "---\n\n"
         "## 二、实现步骤 (Implementation)\n\n"
-        f"{_steps_section(source_text)}\n\n"
+        f"{_steps_section(content_blocks, fallback_text=organized_body)}\n\n"
         "---\n\n"
         "## 三、关键发现与启发 (Philosophy & Lessons)\n\n"
         f"> **{summary}**\n\n"
@@ -684,13 +796,13 @@ def render_research_survey(
     source_url: str,
     summary: str,
     key_points: list[str],
-    source_text: str,
+    organized_body: str,
+    content_blocks: list[dict],
 ) -> str:
     descriptor = key_points[0] if key_points else summary
     descriptor = descriptor[:60] if descriptor else "内容调研"
-    overview_units = extract_content_units(source_text, max_units=4)
-    overview_body = "\n\n".join(overview_units) if overview_units else organize_source_text(source_text[:1200])
-    mechanism_body = organize_source_text(source_text)
+    overview_units = extract_content_units_from_blocks(content_blocks, max_units=4, fallback_text=organized_body)
+    overview_body = "\n\n".join(overview_units) if overview_units else organized_body
     return (
         f"# {title}：{descriptor}\n\n"
         f"> 来源：{source_url}\n"
@@ -709,7 +821,7 @@ def render_research_survey(
         f"{_feature_table(key_points)}\n\n"
         "---\n\n"
         "## 三、技术实现逻辑 (Mechanism)\n\n"
-        f"{mechanism_body}\n\n"
+        f"{organized_body}\n\n"
         "---\n\n"
         "## 四、与当前项目的关系 (Relationship)\n\n"
         f"{_research_relation_table(source_platform)}\n\n"
@@ -728,14 +840,13 @@ def render_tech_analysis(
     source_url: str,
     summary: str,
     key_points: list[str],
-    source_text: str,
+    organized_body: str,
+    content_blocks: list[dict],
+    raw_source_text: str,
 ) -> str:
     pain_points = key_points[:2] if key_points else [summary]
-    pain_lines = "\n".join(f"{index}. {point}" for index, point in enumerate(pain_points, start=1))
-    if not pain_lines:
-        pain_lines = "1. 暂无明确痛点"
-    raw_section = render_source_text_section(source_text)
-
+    pain_lines = "\n".join(f"{index}. {point}" for index, point in enumerate(pain_points, start=1)) or "1. 暂无明确痛点"
+    raw_section = render_source_text_section(raw_source_text)
     return (
         f"# {title} 深度解析\n\n"
         f"> 来源：{source_url}\n"
@@ -747,7 +858,7 @@ def render_tech_analysis(
         f"{pain_lines}\n\n"
         "---\n\n"
         "## 二、核心配置 / 逻辑分析 (Key Logic)\n\n"
-        f"{_logic_section(source_text)}\n\n"
+        f"{_logic_section(content_blocks, fallback_text=organized_body)}\n\n"
         "---\n\n"
         "## 三、关键结论与效果观察\n\n"
         f"{_observation_table(key_points)}\n\n"
@@ -756,3 +867,80 @@ def render_tech_analysis(
         f"{_insight_table(key_points)}\n\n"
         + ("---\n\n" + raw_section if raw_section else "")
     )
+
+
+def render_document(
+    *,
+    title: str,
+    source_platform: str,
+    source_url: str,
+    summary: str,
+    key_points: list[str],
+    source_text: str = "",
+    content_blocks=None,
+    raw_source_text: str | None = None,
+) -> dict:
+    raw_text = source_text if raw_source_text is None else raw_source_text
+    normalized_blocks = normalize_content_blocks(content_blocks, fallback_text=source_text)
+    organized_body = render_content_blocks(normalized_blocks)
+    analysis_text = content_blocks_to_plain_text(normalized_blocks) or strip_markdown(source_text)
+    display_key_points = polish_key_points(key_points, fallback_text=analysis_text)
+    display_summary = polish_summary(summary, display_key_points, fallback_text=analysis_text)
+
+    template_kind = choose_template_kind(
+        title=title,
+        summary=display_summary,
+        key_points=display_key_points,
+        source_text=analysis_text,
+        source_platform=source_platform,
+    )
+    if template_kind == "practical_record":
+        markdown = render_practical_record(
+            title=title,
+            source_platform=source_platform,
+            source_url=source_url,
+            summary=display_summary,
+            key_points=display_key_points,
+            organized_body=organized_body,
+            content_blocks=normalized_blocks,
+        )
+    elif template_kind == "research_survey":
+        markdown = render_research_survey(
+            title=title,
+            source_platform=source_platform,
+            source_url=source_url,
+            summary=display_summary,
+            key_points=display_key_points,
+            organized_body=organized_body,
+            content_blocks=normalized_blocks,
+        )
+    elif template_kind == "tech_analysis":
+        markdown = render_tech_analysis(
+            title=title,
+            source_platform=source_platform,
+            source_url=source_url,
+            summary=display_summary,
+            key_points=display_key_points,
+            organized_body=organized_body,
+            content_blocks=normalized_blocks,
+            raw_source_text=raw_text,
+        )
+    else:
+        template_kind = "report"
+        markdown = render_report(
+            title=title,
+            source_platform=source_platform,
+            source_url=source_url,
+            summary=display_summary,
+            key_points=display_key_points,
+            organized_body=organized_body,
+            raw_source_text=raw_text,
+        )
+
+    return {
+        "template_name": template_kind,
+        "summary": display_summary,
+        "key_points": display_key_points,
+        "content_blocks": normalized_blocks,
+        "markdown": markdown,
+    }
