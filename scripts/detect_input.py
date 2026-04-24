@@ -49,14 +49,17 @@ TEXT_EXTENSIONS = {
     ".yml",
 }
 
-OFFICE_EXTENSIONS = {
+LOCAL_LIGHT_OFFICE_EXTENSIONS = {
+    ".docx",
+    ".pptx",
+    ".xlsx",
+}
+
+API_DIRECT_EXTENSIONS = {
     ".pdf",
     ".doc",
-    ".docx",
     ".ppt",
-    ".pptx",
     ".xls",
-    ".xlsx",
 }
 
 IMAGE_EXTENSIONS = {
@@ -72,6 +75,7 @@ IMAGE_EXTENSIONS = {
 URL_PATTERN = re.compile(r"https?://[^\s<>\u3000]+", re.IGNORECASE)
 TRAILING_URL_CHARS = " \t\r\n'\"`)]}>,.;:!?。，、！？；：~"
 DEFAULT_RESOLVE_TIMEOUT_SECONDS = 10
+
 ISSUE_ACTION_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -90,6 +94,7 @@ ISSUE_ACTION_PATTERNS = [
         r"记.*issue",
     )
 ]
+
 ISSUE_PROBLEM_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -143,36 +148,6 @@ def should_resolve_short_url(url: str) -> bool:
     if host == "v.douyin.com":
         return True
     if host == "m.toutiao.com" and path.startswith("/is/"):
-        return True
-    return False
-
-
-def infer_source_type_from_text(value: str) -> str:
-    text = value.lower()
-    if "youtube" in text or "youtu.be" in text:
-        return "youtube_url"
-    if "抖音" in value or "douyin" in text:
-        return "douyin_url"
-    if "头条" in value or "西瓜" in value or "toutiao" in text or "ixigua" in text:
-        return "toutiao_url"
-    if "上传文件" in value or "本地文件" in value:
-        return "uploaded_file"
-    if any(ext in text for ext in (".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".png", ".jpg", ".jpeg")):
-        return "uploaded_file"
-    return ""
-
-
-def detect_issue_intent(value: str) -> bool:
-    if not value:
-        return False
-
-    has_action = any(pattern.search(value) for pattern in ISSUE_ACTION_PATTERNS)
-    has_problem = any(pattern.search(value) for pattern in ISSUE_PROBLEM_PATTERNS)
-    mentions_destination = any(keyword in value.lower() for keyword in ("github", "issue", "仓库"))
-
-    if has_action and (has_problem or mentions_destination):
-        return True
-    if mentions_destination and has_problem and any(keyword in value for keyword in ("帮我", "麻烦", "请", "提", "报", "反馈", "提交", "创建", "开")):
         return True
     return False
 
@@ -257,30 +232,98 @@ def classify_url(url: str) -> dict:
     return result
 
 
+def detect_file_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in TEXT_EXTENSIONS:
+        return "text_file"
+    if suffix in LOCAL_LIGHT_OFFICE_EXTENSIONS or suffix in API_DIRECT_EXTENSIONS:
+        return "office_file"
+    if suffix in IMAGE_EXTENSIONS:
+        return "image_file"
+    return "unknown_file"
+
+
+def infer_file_processing_strategy(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in TEXT_EXTENSIONS:
+        return "local_text"
+    if suffix in LOCAL_LIGHT_OFFICE_EXTENSIONS:
+        return "local_office_then_api"
+    if suffix in API_DIRECT_EXTENSIONS or suffix in IMAGE_EXTENSIONS:
+        return "api_direct"
+    return "api_direct"
+
+
+def infer_file_processing_reason(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in TEXT_EXTENSIONS:
+        return f"text_extension:{suffix}"
+    if suffix in LOCAL_LIGHT_OFFICE_EXTENSIONS:
+        return f"local_light_office_extension:{suffix}"
+    if suffix in API_DIRECT_EXTENSIONS:
+        return f"api_direct_office_extension:{suffix}"
+    if suffix in IMAGE_EXTENSIONS:
+        return f"image_extension:{suffix}"
+    if suffix:
+        return f"unknown_extension:{suffix}"
+    return "missing_extension"
+
+
 def classify_file(file_path: str) -> dict:
     path = Path(file_path).expanduser()
     suffix = path.suffix.lower()
     mime, _ = mimetypes.guess_type(str(path))
-
-    if suffix in TEXT_EXTENSIONS:
-        file_kind = "text_file"
-    elif suffix in OFFICE_EXTENSIONS:
-        file_kind = "office_file"
-    elif suffix in IMAGE_EXTENSIONS:
-        file_kind = "image_file"
-    else:
-        file_kind = "unknown_file"
+    strategy = infer_file_processing_strategy(path)
+    reason = infer_file_processing_reason(path)
 
     return {
         "ok": True,
         "kind": "uploaded_file",
-        "file_kind": file_kind,
+        "file_kind": detect_file_kind(path),
         "route": "scripts/file_to_markdown.py",
         "input": str(path),
         "exists": path.exists(),
         "extension": suffix,
         "mime": mime,
+        "file_processing_strategy": strategy,
+        "file_processing_reason": reason,
+        "file_will_call_api_directly": strategy == "api_direct",
     }
+
+
+def infer_source_type_from_text(value: str) -> str:
+    text = value.lower()
+    if "youtube" in text or "youtu.be" in text:
+        return "youtube_url"
+    if "抖音" in value or "douyin" in text:
+        return "douyin_url"
+    if "头条" in value or "西瓜" in value or "toutiao" in text or "ixigua" in text:
+        return "toutiao_url"
+    if "上传文件" in value or "本地文件" in value:
+        return "uploaded_file"
+    if any(
+        ext in text
+        for ext in (".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".png", ".jpg", ".jpeg")
+    ):
+        return "uploaded_file"
+    return ""
+
+
+def detect_issue_intent(value: str) -> bool:
+    if not value:
+        return False
+
+    has_action = any(pattern.search(value) for pattern in ISSUE_ACTION_PATTERNS)
+    has_problem = any(pattern.search(value) for pattern in ISSUE_PROBLEM_PATTERNS)
+    mentions_destination = any(keyword in value.lower() for keyword in ("github", "issue", "仓库"))
+
+    if has_action and (has_problem or mentions_destination):
+        return True
+    if mentions_destination and has_problem and any(
+        keyword in value for keyword in ("帮我", "麻烦", "请", "提", "报", "反馈", "提交", "创建", "开")
+    ):
+        return True
+    return False
 
 
 def classify_issue_report(value: str) -> dict:

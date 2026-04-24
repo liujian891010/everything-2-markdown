@@ -28,6 +28,7 @@ from datetime import date
 from pathlib import Path
 
 from docdb_support import build_document_result
+from document_renderer import render_document
 
 
 TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
@@ -481,15 +482,19 @@ def build_output(
         )
         return result
 
+    rendered = render_document(
+        title=title,
+        source_platform="网页",
+        source_url=url,
+        summary=summary,
+        key_points=key_points,
+        source_text=content,
+    )
+    result["document_template"] = rendered["template_name"]
+
     result.update(
         build_document_result(
-            markdown=render_markdown_document(
-                title=title,
-                source_url=url,
-                summary=summary,
-                key_points=key_points,
-                source_text=content,
-            ),
+            markdown=rendered["markdown"],
             title=title,
             source_type="generic_url",
             ingest=args.ingest,

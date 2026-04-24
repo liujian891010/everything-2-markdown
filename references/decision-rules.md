@@ -14,6 +14,34 @@
    - `m.toutiao.com/is/...`
 9. 都不满足时，视为纯文本或聊天记录，走文本总结流程。
 
+## 文件路由补充
+
+命中文件处理时，返回：
+
+- `kind = uploaded_file`
+- `route = scripts/file_to_markdown.py`
+
+并额外补充：
+
+- `file_kind`
+- `file_processing_strategy`
+- `file_processing_reason`
+- `file_will_call_api_directly`
+
+`file_processing_strategy` 的含义：
+
+- `local_text`
+- `local_office_then_api`
+- `api_direct`
+
+`file_processing_reason` 用来解释命中原因，例如：
+
+- `text_extension:.md`
+- `local_light_office_extension:.docx`
+- `api_direct_office_extension:.pdf`
+- `image_extension:.png`
+- `unknown_extension:.foo`
+
 ## Issue 路由判断
 
 命中 issue 上报流程时，返回：

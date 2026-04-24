@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import html
 import json
 import mimetypes
 import os
@@ -11,13 +13,15 @@ import ssl
 import subprocess
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 from datetime import date
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from docdb_support import build_document_result
+from document_renderer import render_document
 
 
 TEXT_EXTENSIONS = {
@@ -35,14 +39,17 @@ TEXT_EXTENSIONS = {
     ".yml",
 }
 
-OFFICE_EXTENSIONS = {
+LOCAL_LIGHT_OFFICE_EXTENSIONS = {
+    ".docx",
+    ".pptx",
+    ".xlsx",
+}
+
+API_DIRECT_EXTENSIONS = {
     ".pdf",
     ".doc",
-    ".docx",
     ".ppt",
-    ".pptx",
     ".xls",
-    ".xlsx",
 }
 
 IMAGE_EXTENSIONS = {
@@ -59,14 +66,21 @@ DEFAULT_TOKEN_HEADER = "access-token"
 DEFAULT_TIMEOUT_SECONDS = 300
 DEFAULT_API_BASE_URL = "https://sg-al-cwork-web.mediportal.com.cn"
 DEFAULT_API_PATH = "/open-api/file-processing-service/v1/convert/upload-sync"
+LOCAL_OFFICE_MIN_LENGTH = 40
+MAX_TABLE_ROWS = 20
+MAX_TABLE_COLS = 8
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
-AUTH_SCRIPT = (
-    SKILL_DIR.parent / "cms-auth-skills" / "scripts" / "auth" / "login.py"
-)
+AUTH_SCRIPT = SKILL_DIR.parent / "cms-auth-skills" / "scripts" / "auth" / "login.py"
 SSL_CONTEXT = ssl.create_default_context()
 SSL_CONTEXT.check_hostname = False
 SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+NS = {
+    "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "ss": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -127,7 +141,7 @@ def detect_file_kind(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in TEXT_EXTENSIONS:
         return "text_file"
-    if suffix in OFFICE_EXTENSIONS:
+    if suffix in LOCAL_LIGHT_OFFICE_EXTENSIONS or suffix in API_DIRECT_EXTENSIONS:
         return "office_file"
     if suffix in IMAGE_EXTENSIONS:
         return "image_file"
@@ -142,7 +156,6 @@ def guess_mime(path: Path) -> str:
 def resolve_api_url(args: argparse.Namespace) -> str:
     if args.api_url:
         return args.api_url.strip()
-
     if not args.api_base_url:
         raise RuntimeError("缺少文件解析服务域名，请传入 --api-url 或 --api-base-url。")
 
@@ -182,6 +195,7 @@ def resolve_token(args: argparse.Namespace) -> str:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:
@@ -207,9 +221,7 @@ def build_multipart_form(file_path: Path) -> tuple[bytes, str]:
 
     parts = [
         f"--{boundary}\r\n".encode("utf-8"),
-        (
-            f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'
-        ).encode("utf-8"),
+        f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode("utf-8"),
         f"Content-Type: {mime}\r\n\r\n".encode("utf-8"),
         file_bytes,
         b"\r\n",
@@ -247,10 +259,9 @@ def upload_file_sync(
             charset = response.headers.get_content_charset() or "utf-8"
             text = raw.decode(charset, errors="replace")
             try:
-                payload = json.loads(text)
+                return json.loads(text)
             except ValueError as exc:
                 raise RuntimeError("文件解析接口返回了非 JSON 响应") from exc
-            return payload
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"文件解析请求失败: HTTP {exc.code} {raw}") from exc
@@ -315,7 +326,6 @@ def pick_first_scalar(payload, keys: tuple[str, ...]) -> str | None:
 def extract_result_payload(payload):
     if not isinstance(payload, dict):
         return payload
-
     for key in ("data", "result", "payload"):
         value = payload.get(key)
         if value not in (None, "", [], {}):
@@ -358,7 +368,6 @@ def is_success_payload(payload: dict) -> bool:
     if result_code in (None, "", 0, 1, 200, "0", "1", "200"):
         extracted = extract_result_payload(payload)
         return extracted not in (None, "", [], {})
-
     return False
 
 
@@ -454,7 +463,7 @@ def build_summary(summary: str | None, key_points: list[str], content: str) -> s
 
     compact = strip_markdown(content)
     if not compact:
-        return "文件已上传到解析服务，但未提取到可用正文。"
+        return "文件已处理，但没有提取到可用正文。"
     return compact[:180] + ("..." if len(compact) > 180 else "")
 
 
@@ -485,10 +494,7 @@ def build_sections_markdown(sections) -> str:
             continue
 
         title = (
-            pick_first_string(
-                item,
-                ("title", "name", "heading", "header", "sectionTitle"),
-            )
+            pick_first_string(item, ("title", "name", "heading", "header", "sectionTitle"))
             or f"第 {index} 部分"
         )
         body = (
@@ -502,7 +508,6 @@ def build_sections_markdown(sections) -> str:
             body = json.dumps(item, ensure_ascii=False, indent=2)
             body = f"```json\n{body}\n```"
         rendered.append(f"### {title}\n\n{body.strip()}")
-
     return "\n\n".join(rendered)
 
 
@@ -548,10 +553,14 @@ def build_metadata_lines(file_path: Path, file_kind: str, mime: str, payload) ->
 
     page_count = pick_first_scalar(payload, ("pageCount", "page_count", "totalPages"))
     parser_name = pick_first_scalar(payload, ("parser", "engine", "service", "converter"))
+    processing_mode = pick_first_scalar(payload, ("processingMode", "processing_mode"))
+
     if page_count:
         lines.append(f"> 页数：{page_count}")
     if parser_name:
         lines.append(f"> 解析器：{parser_name}")
+    if processing_mode:
+        lines.append(f"> 处理模式：{processing_mode}")
     return "\n".join(lines)
 
 
@@ -565,16 +574,428 @@ def render_markdown_document(
     key_points: list[str],
     body: str,
     payload,
-) -> str:
+) -> dict:
     metadata = build_metadata_lines(file_path, file_kind, mime, payload)
-    return (
-        f"# {title}\n\n"
-        f"{metadata}\n\n"
-        "---\n\n"
-        f"## 摘要\n{summary}\n\n"
-        f"## 关键点\n{bullets_from_key_points(key_points)}\n\n"
-        f"## 正文整理\n{body.strip()}\n"
+    rendered = render_document(
+        title=title,
+        source_platform="本地文件",
+        source_url=file_path.name,
+        summary=summary,
+        key_points=key_points,
+        source_text=body.strip(),
     )
+    markdown = rendered["markdown"].strip()
+    lines = markdown.splitlines()
+    if lines and lines[0].startswith("# "):
+        remaining = lines[1:]
+        while remaining and not remaining[0].strip():
+            remaining = remaining[1:]
+        while remaining and remaining[0].startswith("> "):
+            remaining = remaining[1:]
+        while remaining and not remaining[0].strip():
+            remaining = remaining[1:]
+        markdown = "\n".join([lines[0], "", metadata, "", *remaining]).strip() + "\n"
+    else:
+        markdown = f"# {title}\n\n{metadata}\n\n{markdown}\n"
+    return {
+        "template_name": rendered["template_name"],
+        "markdown": markdown,
+    }
+
+
+def read_text_file(path: Path) -> tuple[str, str]:
+    raw = path.read_bytes()
+    for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk", "big5"):
+        try:
+            return raw.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace"), "utf-8-replace"
+
+
+def truncate_text(text: str, limit: int = 12000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n\n[内容过长，已截断]"
+
+
+def strip_html_to_text(html_text: str) -> str:
+    cleaned = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", html_text)
+    cleaned = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", cleaned)
+    cleaned = re.sub(r"(?is)<noscript[^>]*>.*?</noscript>", " ", cleaned)
+    cleaned = re.sub(r"(?is)<[^>]+>", " ", cleaned)
+    return normalize_space(html.unescape(cleaned))
+
+
+def markdown_table(rows: list[list[str]], headers: list[str] | None = None) -> str:
+    if not rows and not headers:
+        return ""
+
+    if headers is None and rows:
+        headers = rows[0]
+        rows = rows[1:]
+    headers = headers or []
+    if not headers:
+        return ""
+
+    def clean_cell(value: str) -> str:
+        return normalize_space(value).replace("|", "\\|") or " "
+
+    header_line = "| " + " | ".join(clean_cell(cell) for cell in headers) + " |"
+    separator = "| " + " | ".join("---" for _ in headers) + " |"
+    body_lines = []
+    for row in rows:
+        padded = list(row[: len(headers)]) + [""] * max(0, len(headers) - len(row))
+        body_lines.append("| " + " | ".join(clean_cell(cell) for cell in padded[: len(headers)]) + " |")
+    return "\n".join([header_line, separator, *body_lines]) if body_lines else "\n".join([header_line, separator])
+
+
+def parse_text_file_locally(path: Path) -> dict:
+    suffix = path.suffix.lower()
+    text, encoding = read_text_file(path)
+    text = text.replace("\r\n", "\n")
+    title = path.stem
+
+    if suffix in {".md", ".markdown"}:
+        markdown_content = truncate_text(text)
+        plain_text = strip_markdown(markdown_content)
+        key_points = build_key_points(plain_text)
+        return {
+            "ok": True,
+            "resultCode": 1,
+            "data": {
+                "title": title,
+                "markdown": markdown_content,
+                "text": plain_text,
+                "keyPoints": key_points,
+                "parser": "local_text_parser",
+                "processingMode": "local_text",
+                "encoding": encoding,
+            },
+        }
+
+    if suffix in {".html", ".htm"}:
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+        html_title = normalize_space(html.unescape(re.sub(r"<[^>]+>", " ", title_match.group(1)))) if title_match else title
+        plain_text = truncate_text(strip_html_to_text(text))
+        key_points = build_key_points(plain_text)
+        return {
+            "ok": True,
+            "resultCode": 1,
+            "data": {
+                "title": html_title or title,
+                "text": plain_text,
+                "keyPoints": key_points,
+                "parser": "local_html_parser",
+                "processingMode": "local_text",
+                "encoding": encoding,
+            },
+        }
+
+    if suffix == ".json":
+        try:
+            payload = json.loads(text)
+            pretty = json.dumps(payload, ensure_ascii=False, indent=2)
+            markdown_content = f"## JSON 内容\n```json\n{truncate_text(pretty, 14000)}\n```"
+            keys = list(payload.keys())[:5] if isinstance(payload, dict) else []
+            key_points = [f"顶层字段：{key}" for key in keys] if keys else build_key_points(pretty)
+        except Exception:
+            pretty = truncate_text(text)
+            markdown_content = f"## JSON 原文\n```json\n{pretty}\n```"
+            key_points = build_key_points(pretty)
+        return {
+            "ok": True,
+            "resultCode": 1,
+            "data": {
+                "title": title,
+                "markdown": markdown_content,
+                "text": truncate_text(pretty),
+                "keyPoints": key_points,
+                "parser": "local_json_parser",
+                "processingMode": "local_text",
+                "encoding": encoding,
+            },
+        }
+
+    if suffix in {".csv", ".tsv"}:
+        delimiter = "\t" if suffix == ".tsv" else ","
+        reader = csv.reader(text.splitlines(), delimiter=delimiter)
+        rows = []
+        for row in reader:
+            rows.append([cell.strip() for cell in row[:MAX_TABLE_COLS]])
+            if len(rows) >= MAX_TABLE_ROWS + 1:
+                break
+        table = markdown_table(rows) if rows else ""
+        plain_text = truncate_text(text)
+        key_points = build_key_points(plain_text)
+        markdown_content = "## 表格预览\n" + (table or "_空表格或无法读取表格内容_")
+        if len(rows) > MAX_TABLE_ROWS:
+            markdown_content += "\n\n> 表格内容已截断预览。"
+        return {
+            "ok": True,
+            "resultCode": 1,
+            "data": {
+                "title": title,
+                "markdown": markdown_content,
+                "text": plain_text,
+                "keyPoints": key_points,
+                "parser": "local_table_parser",
+                "processingMode": "local_text",
+                "encoding": encoding,
+            },
+        }
+
+    if suffix == ".xml":
+        try:
+            root = ET.fromstring(text)
+            plain_text = truncate_text(" ".join(segment.strip() for segment in root.itertext() if normalize_space(segment)))
+            key_points = [f"根节点：{root.tag}"] + build_key_points(plain_text)[:2]
+        except Exception:
+            plain_text = truncate_text(text)
+            key_points = build_key_points(plain_text)
+        return {
+            "ok": True,
+            "resultCode": 1,
+            "data": {
+                "title": title,
+                "text": plain_text,
+                "keyPoints": key_points,
+                "parser": "local_xml_parser",
+                "processingMode": "local_text",
+                "encoding": encoding,
+            },
+        }
+
+    plain_text = truncate_text(text)
+    return {
+        "ok": True,
+        "resultCode": 1,
+        "data": {
+            "title": title,
+            "text": plain_text,
+            "keyPoints": build_key_points(plain_text),
+            "parser": "local_text_parser",
+            "processingMode": "local_text",
+            "encoding": encoding,
+        },
+    }
+
+
+def parse_docx_locally(path: Path) -> dict | None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            document_xml = archive.read("word/document.xml")
+    except Exception:
+        return None
+
+    try:
+        root = ET.fromstring(document_xml)
+    except Exception:
+        return None
+
+    paragraphs = []
+    for paragraph in root.findall(".//w:p", NS):
+        texts = [node.text for node in paragraph.findall(".//w:t", NS) if node.text]
+        joined = "".join(texts).strip()
+        if joined:
+            paragraphs.append(joined)
+
+    if not paragraphs:
+        return None
+
+    text = truncate_text("\n\n".join(paragraphs))
+    return {
+        "ok": True,
+        "resultCode": 1,
+        "data": {
+            "title": path.stem,
+            "text": text,
+            "keyPoints": build_key_points(text),
+            "pageCount": len(paragraphs),
+            "parser": "local_docx_parser",
+            "processingMode": "local_office",
+        },
+    }
+
+
+def parse_pptx_locally(path: Path) -> dict | None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            slide_names = sorted(name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml"))
+            sections = []
+            for index, slide_name in enumerate(slide_names, start=1):
+                root = ET.fromstring(archive.read(slide_name))
+                texts = [node.text.strip() for node in root.findall(".//a:t", NS) if node.text and node.text.strip()]
+                if texts:
+                    sections.append({
+                        "title": f"第 {index} 页",
+                        "text": "\n".join(texts),
+                    })
+    except Exception:
+        return None
+
+    if not sections:
+        return None
+
+    full_text = truncate_text("\n\n".join(section["text"] for section in sections))
+    return {
+        "ok": True,
+        "resultCode": 1,
+        "data": {
+            "title": path.stem,
+            "text": full_text,
+            "sections": sections,
+            "keyPoints": build_key_points(full_text),
+            "pageCount": len(sections),
+            "parser": "local_pptx_parser",
+            "processingMode": "local_office",
+        },
+    }
+
+
+def parse_xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
+    try:
+        root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+    except Exception:
+        return []
+
+    strings = []
+    for item in root.findall(".//ss:si", NS):
+        text = "".join(node.text or "" for node in item.findall(".//ss:t", NS))
+        strings.append(text)
+    return strings
+
+
+def parse_xlsx_sheet_names(archive: zipfile.ZipFile) -> list[str]:
+    try:
+        root = ET.fromstring(archive.read("xl/workbook.xml"))
+    except Exception:
+        return []
+    names = []
+    for sheet in root.findall(".//ss:sheets/ss:sheet", NS):
+        name = sheet.attrib.get("name", "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def parse_xlsx_locally(path: Path) -> dict | None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            shared_strings = parse_xlsx_shared_strings(archive)
+            sheet_names = parse_xlsx_sheet_names(archive)
+            sheet_files = sorted(
+                name for name in archive.namelist()
+                if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+            )
+            sections = []
+            for index, sheet_file in enumerate(sheet_files, start=1):
+                root = ET.fromstring(archive.read(sheet_file))
+                rows = []
+                for row in root.findall(".//ss:sheetData/ss:row", NS):
+                    values = []
+                    for cell in row.findall("ss:c", NS):
+                        cell_type = cell.attrib.get("t")
+                        value_node = cell.find("ss:v", NS)
+                        value = value_node.text if value_node is not None and value_node.text else ""
+                        if cell_type == "s" and value.isdigit():
+                            idx = int(value)
+                            value = shared_strings[idx] if 0 <= idx < len(shared_strings) else value
+                        values.append(value)
+                    if any(normalize_space(cell) for cell in values):
+                        rows.append(values[:MAX_TABLE_COLS])
+                    if len(rows) >= MAX_TABLE_ROWS + 1:
+                        break
+
+                if not rows:
+                    continue
+
+                table = markdown_table(rows)
+                section_title = sheet_names[index - 1] if index - 1 < len(sheet_names) else f"Sheet {index}"
+                sections.append({
+                    "title": section_title,
+                    "markdown": table or "_无法生成表格预览_",
+                })
+    except Exception:
+        return None
+
+    if not sections:
+        return None
+
+    combined_markdown = "\n\n".join(
+        f"### {section['title']}\n\n{section['markdown']}" for section in sections
+    )
+    combined_text = truncate_text(strip_markdown(combined_markdown))
+    return {
+        "ok": True,
+        "resultCode": 1,
+        "data": {
+            "title": path.stem,
+            "markdown": combined_markdown,
+            "text": combined_text,
+            "sections": sections,
+            "keyPoints": build_key_points(combined_text),
+            "pageCount": len(sections),
+            "parser": "local_xlsx_parser",
+            "processingMode": "local_office",
+        },
+    }
+
+
+def parse_local_file(path: Path) -> tuple[dict | None, str]:
+    suffix = path.suffix.lower()
+    if suffix in TEXT_EXTENSIONS:
+        return parse_text_file_locally(path), "local_text"
+    if suffix == ".docx":
+        return parse_docx_locally(path), "local_office"
+    if suffix == ".pptx":
+        return parse_pptx_locally(path), "local_office"
+    if suffix == ".xlsx":
+        return parse_xlsx_locally(path), "local_office"
+    return None, "api"
+
+
+def local_payload_is_usable(payload: dict | None, *, minimum_length: int) -> bool:
+    if not payload or not is_success_payload(payload):
+        return False
+    data = extract_result_payload(payload)
+    content = (
+        pick_first_string(
+            data,
+            (
+                "markdown",
+                "md",
+                "markdownContent",
+                "contentMarkdown",
+                "outputMarkdown",
+                "resultMarkdown",
+                "text",
+                "content",
+                "body",
+                "plainText",
+                "plain_text",
+                "extractedText",
+                "extracted_text",
+                "source_text",
+            ),
+        )
+        or ""
+    )
+    sections = pick_first_list(data, ("sections", "pages", "chunks", "blocks", "paragraphs"))
+    if sections and not content:
+        content = build_sections_markdown(sections)
+    return len(strip_markdown(content)) >= minimum_length
+
+
+def should_call_api_directly(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if suffix in API_DIRECT_EXTENSIONS:
+        return True
+    if suffix in IMAGE_EXTENSIONS:
+        return True
+    if suffix not in TEXT_EXTENSIONS and suffix not in LOCAL_LIGHT_OFFICE_EXTENSIONS:
+        return True
+    return False
 
 
 def build_output(
@@ -584,23 +1005,16 @@ def build_output(
     file_kind: str,
     mime: str,
     args: argparse.Namespace,
+    processing_mode: str,
+    used_api_fallback: bool,
+    fallback_reason: str = "",
 ) -> dict:
     data = extract_result_payload(payload)
     title = sanitize_title(file_path, payload)
-    summary = pick_first_string(
-        data,
-        ("summary", "abstract", "description", "desc", "brief"),
-    )
+    summary = pick_first_string(data, ("summary", "abstract", "description", "desc", "brief"))
     markdown_content = pick_first_string(
         data,
-        (
-            "markdown",
-            "md",
-            "markdownContent",
-            "contentMarkdown",
-            "outputMarkdown",
-            "resultMarkdown",
-        ),
+        ("markdown", "md", "markdownContent", "contentMarkdown", "outputMarkdown", "resultMarkdown"),
     )
     text_content = pick_first_string(
         data,
@@ -616,20 +1030,15 @@ def build_output(
             "ocr_text",
         ),
     )
-    sections = pick_first_list(
-        data,
-        ("sections", "pages", "chunks", "blocks", "paragraphs"),
-    )
-    key_points = normalize_key_points(
-        pick_first_list(data, ("keyPoints", "key_points", "highlights"))
-    )
+    sections = pick_first_list(data, ("sections", "pages", "chunks", "blocks", "paragraphs"))
+    key_points = normalize_key_points(pick_first_list(data, ("keyPoints", "key_points", "highlights")))
     content_for_summary = markdown_content or text_content or ""
     if not key_points:
         key_points = build_key_points(content_for_summary)
     final_summary = build_summary(summary, key_points, content_for_summary)
     sections_markdown = build_sections_markdown(sections)
     organized_body = organize_body(markdown_content or text_content or "", sections_markdown)
-    markdown = render_markdown_document(
+    rendered = render_markdown_document(
         title=title,
         file_path=file_path,
         file_kind=file_kind,
@@ -652,10 +1061,16 @@ def build_output(
         "mime": mime,
         "service_has_markdown": bool(markdown_content),
         "service_has_text": bool(text_content),
+        "processing_mode": processing_mode,
+        "used_api_fallback": used_api_fallback,
+        "document_template": rendered["template_name"],
     }
+    if fallback_reason:
+        result["fallback_reason"] = fallback_reason
+
     result.update(
         build_document_result(
-            markdown=markdown,
+            markdown=rendered["markdown"],
             title=title,
             source_type="uploaded_file",
             ingest=args.ingest,
@@ -673,40 +1088,36 @@ def main() -> int:
     path = Path(args.file_path).expanduser()
 
     if not path.exists():
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "source_type": "uploaded_file",
-                    "input": str(path),
-                    "error": "文件不存在",
-                },
-                ensure_ascii=False,
-            )
-        )
+        print(json.dumps({
+            "ok": False,
+            "source_type": "uploaded_file",
+            "input": str(path),
+            "error": "文件不存在",
+        }, ensure_ascii=False))
         return 1
 
     if not path.is_file():
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "source_type": "uploaded_file",
-                    "input": str(path),
-                    "error": "目标路径不是文件",
-                },
-                ensure_ascii=False,
-            )
-        )
+        print(json.dumps({
+            "ok": False,
+            "source_type": "uploaded_file",
+            "input": str(path),
+            "error": "目标路径不是文件",
+        }, ensure_ascii=False))
         return 1
 
     file_kind = detect_file_kind(path)
     mime = guess_mime(path)
 
     try:
+        payload = None
+        processing_mode = "api"
+        used_api_fallback = False
+        fallback_reason = ""
+
         if args.mock_response_file:
             payload = load_mock_payload(args.mock_response_file)
-        else:
+            processing_mode = "api_mock"
+        elif should_call_api_directly(path):
             api_url = resolve_api_url(args)
             token = resolve_token(args)
             payload = upload_file_sync(
@@ -716,21 +1127,36 @@ def main() -> int:
                 header_name=args.header_name,
                 timeout_seconds=args.timeout_seconds,
             )
+            processing_mode = "api"
+        else:
+            payload, local_mode = parse_local_file(path)
+            processing_mode = local_mode
+            minimum_length = 1 if path.suffix.lower() in TEXT_EXTENSIONS else LOCAL_OFFICE_MIN_LENGTH
+
+            if not local_payload_is_usable(payload, minimum_length=minimum_length):
+                fallback_reason = f"{local_mode}_insufficient_content"
+                api_url = resolve_api_url(args)
+                token = resolve_token(args)
+                payload = upload_file_sync(
+                    api_url=api_url,
+                    file_path=path,
+                    token=token,
+                    header_name=args.header_name,
+                    timeout_seconds=args.timeout_seconds,
+                )
+                processing_mode = "api"
+                used_api_fallback = True
 
         if not is_success_payload(payload):
-            print(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "source_type": "uploaded_file",
-                        "input": str(path),
-                        "file_kind": file_kind,
-                        "mime": mime,
-                        "error": extract_service_message(payload),
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            print(json.dumps({
+                "ok": False,
+                "source_type": "uploaded_file",
+                "input": str(path),
+                "file_kind": file_kind,
+                "mime": mime,
+                "processing_mode": processing_mode,
+                "error": extract_service_message(payload),
+            }, ensure_ascii=False))
             return 1
 
         result = build_output(
@@ -739,23 +1165,21 @@ def main() -> int:
             file_kind=file_kind,
             mime=mime,
             args=args,
+            processing_mode=processing_mode,
+            used_api_fallback=used_api_fallback,
+            fallback_reason=fallback_reason,
         )
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "source_type": "uploaded_file",
-                    "input": str(path),
-                    "file_kind": file_kind,
-                    "mime": mime,
-                    "error": str(exc),
-                },
-                ensure_ascii=False,
-            )
-        )
+        print(json.dumps({
+            "ok": False,
+            "source_type": "uploaded_file",
+            "input": str(path),
+            "file_kind": file_kind,
+            "mime": mime,
+            "error": str(exc),
+        }, ensure_ascii=False))
         return 1
 
 

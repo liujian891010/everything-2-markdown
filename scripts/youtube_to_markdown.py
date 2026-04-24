@@ -26,6 +26,7 @@ from datetime import date
 from pathlib import Path
 
 from docdb_support import build_document_result
+from document_renderer import render_document
 
 
 API_URL = "https://sg-al-cwork-web.mediportal.com.cn/video2markdown/parse"
@@ -407,17 +408,14 @@ def render_markdown_document(
     summary: str,
     key_points: list[str],
     source_text: str,
-) -> str:
-    template = load_template()
-    return template.format(
+) -> dict:
+    return render_document(
         title=title,
         source_platform="YouTube",
         source_url=source_url,
-        report_date=date.today().isoformat(),
         summary=summary,
-        key_points_bullets=bullets_from_key_points(key_points),
-        organized_body=organize_source_text(source_text),
-        source_text_block=fenced_source_text(source_text),
+        key_points=key_points,
+        source_text=source_text,
     )
 
 
@@ -456,15 +454,18 @@ def build_output(
         )
         return result
 
+    rendered = render_markdown_document(
+        title=title,
+        source_url=youtube_url,
+        summary=summary,
+        key_points=key_points,
+        source_text=source_text,
+    )
+    result["document_template"] = rendered["template_name"]
+
     result.update(
         build_document_result(
-            markdown=render_markdown_document(
-                title=title,
-                source_url=youtube_url,
-                summary=summary,
-                key_points=key_points,
-                source_text=source_text,
-            ),
+            markdown=rendered["markdown"],
             title=title,
             source_type="youtube_url",
             ingest=args.ingest,

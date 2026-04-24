@@ -24,6 +24,7 @@ from datetime import date
 from pathlib import Path
 
 from docdb_support import build_document_result
+from document_renderer import render_document
 
 
 API_URL = "https://hk-al-xg-node.mediportal.com.cn/api/open/audio/export-with-asr"
@@ -260,15 +261,19 @@ def build_output(
         )
         return result
 
+    rendered = render_document(
+        title=title,
+        source_platform="抖音",
+        source_url=douyin_url,
+        summary=summary,
+        key_points=key_points,
+        source_text=asr_text,
+    )
+    result["document_template"] = rendered["template_name"]
+
     result.update(
         build_document_result(
-            markdown=render_markdown_document(
-                title=title,
-                source_url=douyin_url,
-                summary=summary,
-                key_points=key_points,
-                source_text=asr_text,
-            ),
+            markdown=rendered["markdown"],
             title=title,
             source_type="douyin_url",
             ingest=args.ingest,
