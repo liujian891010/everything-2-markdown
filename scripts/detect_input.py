@@ -72,6 +72,44 @@ IMAGE_EXTENSIONS = {
 URL_PATTERN = re.compile(r"https?://[^\s<>\u3000]+", re.IGNORECASE)
 TRAILING_URL_CHARS = " \t\r\n'\"`)]}>,.;:!?。，、！？；：~"
 DEFAULT_RESOLVE_TIMEOUT_SECONDS = 10
+ISSUE_ACTION_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"提\s*(个)?\s*issue",
+        r"提交\s*issue",
+        r"创建\s*issue",
+        r"开\s*(个)?\s*issue",
+        r"报\s*(个)?\s*issue",
+        r"提\s*(个)?\s*bug",
+        r"提交\s*bug",
+        r"报\s*(个)?\s*bug",
+        r"反馈.*github",
+        r"反馈.*仓库",
+        r"提.*github",
+        r"提.*仓库",
+        r"记.*issue",
+    )
+]
+ISSUE_PROBLEM_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bbug\b",
+        r"报错",
+        r"错误",
+        r"异常",
+        r"有问题",
+        r"有个问题",
+        r"不对",
+        r"失败",
+        r"失效",
+        r"不能用",
+        r"不可用",
+        r"没反应",
+        r"识别错",
+        r"路由错",
+        r"崩溃",
+    )
+]
 
 
 def is_url(value: str) -> bool:
@@ -105,6 +143,36 @@ def should_resolve_short_url(url: str) -> bool:
     if host == "v.douyin.com":
         return True
     if host == "m.toutiao.com" and path.startswith("/is/"):
+        return True
+    return False
+
+
+def infer_source_type_from_text(value: str) -> str:
+    text = value.lower()
+    if "youtube" in text or "youtu.be" in text:
+        return "youtube_url"
+    if "抖音" in value or "douyin" in text:
+        return "douyin_url"
+    if "头条" in value or "西瓜" in value or "toutiao" in text or "ixigua" in text:
+        return "toutiao_url"
+    if "上传文件" in value or "本地文件" in value:
+        return "uploaded_file"
+    if any(ext in text for ext in (".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".png", ".jpg", ".jpeg")):
+        return "uploaded_file"
+    return ""
+
+
+def detect_issue_intent(value: str) -> bool:
+    if not value:
+        return False
+
+    has_action = any(pattern.search(value) for pattern in ISSUE_ACTION_PATTERNS)
+    has_problem = any(pattern.search(value) for pattern in ISSUE_PROBLEM_PATTERNS)
+    mentions_destination = any(keyword in value.lower() for keyword in ("github", "issue", "仓库"))
+
+    if has_action and (has_problem or mentions_destination):
+        return True
+    if mentions_destination and has_problem and any(keyword in value for keyword in ("帮我", "麻烦", "请", "提", "报", "反馈", "提交", "创建", "开")):
         return True
     return False
 
@@ -215,9 +283,39 @@ def classify_file(file_path: str) -> dict:
     }
 
 
+def classify_issue_report(value: str) -> dict:
+    result = {
+        "ok": True,
+        "kind": "issue_report",
+        "route": "scripts/report_github_issue.py",
+        "input": value,
+    }
+
+    related_source_type = infer_source_type_from_text(value)
+    embedded_url = extract_url_from_text(value)
+    if embedded_url:
+        related = classify_url(embedded_url)
+        result.update(
+            {
+                "related_url": related.get("input"),
+                "related_host": related.get("host"),
+                "related_kind": related.get("kind"),
+            }
+        )
+        related_source_type = related.get("kind") or related_source_type
+
+    if related_source_type:
+        result["source_type_hint"] = related_source_type
+
+    return result
+
+
 def classify(value: str, declared_type: str = "") -> dict:
     if declared_type == "file":
         return classify_file(value)
+
+    if detect_issue_intent(value):
+        return classify_issue_report(value)
 
     if is_url(value):
         return classify_url(value)
