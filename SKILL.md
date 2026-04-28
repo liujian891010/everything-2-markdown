@@ -44,7 +44,7 @@ description: 当用户发来 YouTube 链接、普通 URL、抖音 URL、头条 U
 ### 普通 URL
 
 - 不走单一抓取器。
-- 按 `Tavily Extract API -> Jina.ai Reader -> LLM-Reader -> 裸 requests` 的顺序逐步降级。
+- 按 `Tavily Extract API -> Jina.ai Reader -> LLM-Reader -> 裸 requests -> 无头浏览器` 的顺序逐步降级。
 - 只要任一层成功获取正文，就先生成简短摘要给用户。
 - 如果最终仍未成功抓取内容，要明确提示用户抓取失败。
 - 只有用户确认后，才把正文结合 `references/report-template.md` 生成正式 Markdown 文档。
@@ -63,7 +63,7 @@ description: 当用户发来 YouTube 链接、普通 URL、抖音 URL、头条 U
 ### 头条 URL
 
 - 不走单一抓取器。
-- 按 `Tavily Extract API -> Jina.ai Reader -> LLM-Reader -> 裸 requests` 的顺序逐步降级。
+- 按 `Tavily Extract API -> Jina.ai Reader -> LLM-Reader -> 裸 requests -> 无头浏览器` 的顺序逐步降级。
 - 只要任一层成功获取正文，就先生成简短摘要给用户。
 - 如果最终仍未成功抓取内容，要明确提示用户抓取失败。
 - 只有用户确认后，才把正文结合 `references/report-template.md` 生成正式 Markdown 文档。
@@ -111,4 +111,4 @@ description: 当用户发来 YouTube 链接、普通 URL、抖音 URL、头条 U
 
 本 Skill 负责：识别来源、按来源分流、提取结构、输出 Markdown 或摘要、生成统一命名的文档，并直接调用 `cms-docdb` 入库。
 
-本 Skill 暂不负责：真正的视频下载、浏览器自动化、OCR、Office/PDF 深度解析、云端同步。
+本 Skill 暂不负责：真正的视频下载、复杂交互式浏览器自动化、OCR、Office/PDF 深度解析、云端同步。

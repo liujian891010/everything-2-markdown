@@ -15,6 +15,7 @@
 2. Jina.ai Reader
 3. LLM-Reader
 4. 裸 requests
+5. 无头浏览器
 
 如果最终仍未拿到有效正文，就明确提示用户：`没有成功抓取内容`。
 
@@ -24,9 +25,10 @@
 2. Tavily 失败或正文无效时，降级到 Jina.ai Reader。
 3. Jina 失败时，继续降级到 LLM-Reader。
 4. 仍失败时，再用原始请求直接抓页面并尽量抽取正文。
-5. 一旦成功拿到正文，先生成一个简短摘要给用户看。
-6. 只有在用户明确要求整理时，才使用正文和 `references/report-template.md` 形成正式 Markdown 报告。
-7. 报告生成后不要落盘到本地，直接上传到 `cms-docdb`。
+5. 如果容器内没有可用桌面浏览器，但装有 Playwright 运行时，则再用无头浏览器渲染页面并抽取正文。
+6. 一旦成功拿到正文，先生成一个简短摘要给用户看。
+7. 只有在用户明确要求整理时，才使用正文和 `references/report-template.md` 形成正式 Markdown 报告。
+8. 报告生成后不要落盘到本地，直接上传到 `cms-docdb`。
 
 ## 阶段 1 输出
 

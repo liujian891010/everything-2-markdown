@@ -6,6 +6,7 @@ Fallback chain:
 2. Jina.ai Reader
 3. LLM-Reader
 4. Raw requests
+5. Headless browser
 
 If extraction succeeds:
 - build a short summary first
@@ -34,6 +35,7 @@ from document_renderer import (
     polish_summary,
     render_document,
 )
+from headless_browser_fetch import fetch_via_headless_browser
 
 
 TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
@@ -42,6 +44,16 @@ LLM_READER_URL = "https://reader.llm.report/api/read"
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
 TEMPLATE_PATH = SKILL_DIR / "references" / "report-template.md"
+HEADLESS_SELECTORS = (
+    "article",
+    "main",
+    "[role='main']",
+    ".article",
+    ".content",
+    ".main",
+    ".post",
+    ".entry-content",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,6 +74,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sender-id", help="Optional sender_id used to resolve appKey")
     parser.add_argument("--account-id", help="Optional account_id used to resolve appKey")
     parser.add_argument("--context-json", default="", help="Optional auth context JSON")
+    parser.add_argument(
+        "--headless-timeout-ms",
+        type=int,
+        default=15000,
+        help="Timeout for the optional headless browser fallback",
+    )
+    parser.add_argument(
+        "--disable-headless-browser",
+        action="store_true",
+        help="Skip the headless browser fallback even if Playwright is available",
+    )
     parser.add_argument(
         "--ingest",
         action="store_true",
@@ -332,7 +355,13 @@ def fetch_via_raw_requests(url: str) -> dict | None:
     }
 
 
-def extract_content(url: str, mock_response_file: str | None = None) -> dict | None:
+def extract_content(
+    url: str,
+    mock_response_file: str | None = None,
+    *,
+    enable_headless_browser: bool = True,
+    headless_timeout_ms: int = 15000,
+) -> dict | None:
     if mock_response_file:
         payload = json.loads(Path(mock_response_file).read_text(encoding="utf-8"))
         return {
@@ -341,12 +370,22 @@ def extract_content(url: str, mock_response_file: str | None = None) -> dict | N
             "content": payload.get("content", ""),
         }
 
-    for fetcher in (
+    fetchers = [
         fetch_via_tavily,
         fetch_via_jina,
         fetch_via_llm_reader,
         fetch_via_raw_requests,
-    ):
+    ]
+    if enable_headless_browser:
+        fetchers.append(
+            lambda target_url: fetch_via_headless_browser(
+                target_url,
+                timeout_ms=max(headless_timeout_ms, 1000),
+                selectors=HEADLESS_SELECTORS,
+            )
+        )
+
+    for fetcher in fetchers:
         result = fetcher(url)
         if result and is_good_content(result.get("content")):
             return result
@@ -525,7 +564,12 @@ def main() -> int:
     args = parse_args()
 
     try:
-        extracted = extract_content(args.url, args.mock_response_file)
+        extracted = extract_content(
+            args.url,
+            args.mock_response_file,
+            enable_headless_browser=not args.disable_headless_browser,
+            headless_timeout_ms=args.headless_timeout_ms,
+        )
         if not extracted or not is_good_content(extracted.get("content")):
             print(json.dumps({
                 "ok": False,
