@@ -26,7 +26,7 @@ description: 当用户发来 YouTube 链接、普通 URL、抖音 URL、头条 U
 5. 如果来源内容抓取失败，返回失败原因和建议降级路径，不要伪造正文。
 6. 生成文档时不要落盘到本地。
 7. 文档统一命名为 `YYYY-MM-DD-001-标题.md` 这种格式，序号按当天自动递增。
-8. 文档生成后先询问用户“是否入库？”，只有用户确认后才调用 `cms-docdb` 入库。
+8. 文档生成后直接调用 `cms-docdb` 入库，不再等待用户二次确认。
 9. 入库参数固定为：`content=文档内容`、`fileName=文件名`、`fileSuffix=md`，`folderName` 按来源自动识别。
 
 ## 来源处理规则
@@ -109,6 +109,6 @@ description: 当用户发来 YouTube 链接、普通 URL、抖音 URL、头条 U
 
 ## 边界
 
-本 Skill 负责：识别来源、按来源分流、提取结构、输出 Markdown 或摘要、生成统一命名的文档，并在用户确认后调用 `cms-docdb` 入库。
+本 Skill 负责：识别来源、按来源分流、提取结构、输出 Markdown 或摘要、生成统一命名的文档，并直接调用 `cms-docdb` 入库。
 
 本 Skill 暂不负责：真正的视频下载、浏览器自动化、OCR、Office/PDF 深度解析、云端同步。

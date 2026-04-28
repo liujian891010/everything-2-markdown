@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ingest",
         action="store_true",
-        help="Upload the generated markdown document to cms-docdb",
+        help="Deprecated: generated markdown documents are uploaded to cms-docdb automatically",
     )
     return parser.parse_args()
 
@@ -195,12 +195,6 @@ def bullets_from_key_points(key_points: list[str]) -> str:
     return "\n".join(f"- {point}" for point in key_points)
 
 
-def fenced_source_text(source_text: str) -> str:
-    if not source_text.strip():
-        return "```text\n暂无原始文本\n```"
-    return f"```text\n{source_text.strip()}\n```"
-
-
 def load_template() -> str:
     if not TEMPLATE_PATH.exists():
         raise RuntimeError(f"模板不存在: {TEMPLATE_PATH}")
@@ -229,7 +223,6 @@ def render_markdown_document(
         summary=summary,
         key_points_bullets=bullets_from_key_points(key_points),
         organized_body=organize_source_text(source_text),
-        source_text_block=fenced_source_text(source_text),
     )
 
 

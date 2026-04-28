@@ -132,7 +132,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ingest",
         action="store_true",
-        help="Upload the generated markdown document to cms-docdb",
+        help="Deprecated: generated markdown documents are uploaded to cms-docdb automatically",
     )
     return parser.parse_args()
 

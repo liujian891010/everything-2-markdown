@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ingest",
         action="store_true",
-        help="Upload the generated summary document to cms-docdb",
+        help="Deprecated: generated summary documents are uploaded to cms-docdb automatically",
     )
     return parser.parse_args()
 
@@ -231,8 +231,7 @@ def render_text_document(result: dict, original_text: str) -> str:
     return (
         f"# {title}\n\n"
         f"> 来源：{source_label}\n\n"
-        f"## 总结\n{summary}\n\n"
-        f"## 原文\n```text\n{original_text.strip()}\n```"
+        f"## 总结\n{summary}\n"
     )
 
 

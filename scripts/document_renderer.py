@@ -122,20 +122,6 @@ def bullets_from_key_points(key_points: list[str]) -> str:
     return "\n".join(f"- {point}" for point in key_points)
 
 
-def fenced_source_text(source_text: str) -> str:
-    return f"```text\n{source_text.strip()}\n```"
-
-
-def has_source_text(source_text: str) -> bool:
-    return bool(normalize_space(source_text))
-
-
-def render_source_text_section(source_text: str) -> str:
-    if not has_source_text(source_text):
-        return ""
-    return f"## 原始文本\n{fenced_source_text(source_text)}\n"
-
-
 def _trim_trailing_punctuation(text: str) -> str:
     return text.rstrip("。；;，,、!！?？:： ")
 
@@ -739,7 +725,6 @@ def render_report(
     organized_body: str,
     raw_source_text: str,
 ) -> str:
-    raw_section = render_source_text_section(raw_source_text)
     return (
         f"# {title}\n\n"
         f"> 来源：{source_platform}\n"
@@ -748,8 +733,7 @@ def render_report(
         "---\n\n"
         f"## 简介\n{summary}\n\n"
         f"## 关键要点\n{bullets_from_key_points(key_points)}\n\n"
-        f"## 正文整理\n{organized_body}\n\n"
-        f"{raw_section}"
+        f"## 正文整理\n{organized_body}\n"
     )
 
 
@@ -846,7 +830,6 @@ def render_tech_analysis(
 ) -> str:
     pain_points = key_points[:2] if key_points else [summary]
     pain_lines = "\n".join(f"{index}. {point}" for index, point in enumerate(pain_points, start=1)) or "1. 暂无明确痛点"
-    raw_section = render_source_text_section(raw_source_text)
     return (
         f"# {title} 深度解析\n\n"
         f"> 来源：{source_url}\n"
@@ -865,7 +848,6 @@ def render_tech_analysis(
         "---\n\n"
         "## 四、对当前项目的启示 (Actionable Insights)\n\n"
         f"{_insight_table(key_points)}\n\n"
-        + ("---\n\n" + raw_section if raw_section else "")
     )
 
 

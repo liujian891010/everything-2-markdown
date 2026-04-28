@@ -110,7 +110,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ingest",
         action="store_true",
-        help="Upload the generated markdown document to cms-docdb",
+        help="Deprecated: generated markdown documents are uploaded to cms-docdb automatically",
     )
     return parser.parse_args()
 
@@ -387,12 +387,6 @@ def bullets_from_key_points(key_points: list[str]) -> str:
     if not key_points:
         return "- 暂无明确关键要点"
     return "\n".join(f"- {point}" for point in key_points)
-
-
-def fenced_source_text(source_text: str) -> str:
-    if not source_text.strip():
-        return "```text\n暂无原始文本\n```"
-    return f"```text\n{source_text.strip()}\n```"
 
 
 def load_template() -> str:

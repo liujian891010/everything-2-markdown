@@ -228,7 +228,7 @@ def build_document_result(
         sender_id=sender_id,
         account_id=account_id,
         context_json=context_json,
-        required=ingest,
+        required=True,
     )
     document_meta = build_file_name(
         title,
@@ -241,16 +241,6 @@ def build_document_result(
         "markdown": markdown,
         "document": document_meta,
     }
-
-    if not ingest:
-        result.update(
-            {
-                "phase": "await_ingest_confirmation",
-                "question": "是否入库？",
-                "next_action": "rerun with --ingest after user confirmation",
-            }
-        )
-        return result
 
     upload_result = upload_markdown_document(
         markdown=markdown,

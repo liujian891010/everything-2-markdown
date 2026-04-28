@@ -24,4 +24,4 @@
 3. 如果是 `docx / pptx / xlsx`，先做本地轻解析。
 4. 如果本地轻解析失败或内容过少，再自动调用 `file-processing-service` 的 `convert/upload-sync` 接口。
 5. 如果是 `pdf / 图片 / 旧 Office / 未知格式`，直接调用 API。
-6. 生成正式 Markdown 后，只询问一次“是否入库？”。
+6. 生成正式 Markdown 后，直接上传到 `cms-docdb`。
